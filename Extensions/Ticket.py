@@ -119,7 +119,11 @@ class TicketConfig:
             "not_a_ticket": "❌ Dieser Channel ist kein Ticket!",
             "ticket_closed": "🔒 Ticket wird geschlossen...",
             "user_added": "✅ {user} wurde zum Ticket hinzugefügt!",
-            "user_removed": "✅ {user} wurde aus dem Ticket entfernt!"
+            "user_removed": "✅ {user} wurde aus dem Ticket entfernt!",
+            "add_user_instruction": "📝 **Antworte auf diese Nachricht** mit den Usern die du hinzufügen möchtest:",
+            "add_user_timeout": "⏰ **Timeout!** Du hast zu lange gebraucht. Versuche es erneut.",
+            "add_user_no_input": "❌ **Keine User angegeben!** Gib mindestens einen User an.",
+            "add_user_invalid": "❌ **Keine gültigen User gefunden!** Verwende Mentions (@User) oder User-IDs (123456789)."
         }
     }
     
@@ -474,7 +478,7 @@ class TicketControlView(discord.ui.View):
         custom_id="ticket_add_user"
     )
     async def add_user(self, interaction: discord.Interaction, button: discord.ui.Button):
-        """Fügt einen User hinzu"""
+        """Fügt einen oder mehrere User hinzu"""
         # Berechtigung prüfen
         if not (ticket_check(interaction.user.id, interaction.channel.id, interaction.guild.id) or 
                 interaction.user.guild_permissions.administrator or
@@ -485,9 +489,148 @@ class TicketControlView(discord.ui.View):
             )
             return
 
-        # User-Select Modal
-        modal = AddUserModal(interaction.guild.id)
-        await interaction.response.send_modal(modal)
+        # Message-basierte User-Abfrage starten
+        embed = discord.Embed(
+            title="➕ User zum Ticket hinzufügen",
+            description="**Wie funktioniert es?**\n"
+                       "• Erwähne einen oder mehrere User: `@User1 @User2 @User3`\n"
+                       "• Oder gib User-IDs ein: `123456789 987654321`\n"
+                       "• Oder eine Mischung: `@User1 123456789 @User2`\n\n"
+                       "**Beispiel:**\n"
+                       "`@user1 @user2 123456789`",
+            color=COLORS['blue'],
+            timestamp=get_timestamp()
+        )
+        
+        embed.add_field(
+            name="⏰ Timeout",
+            value="Du hast **60 Sekunden** Zeit zu antworten.",
+            inline=False
+        )
+        
+        await interaction.response.send_message(
+            self.config.get('messages.add_user_instruction', "📝 **Antworte auf diese Nachricht** mit den Usern die du hinzufügen möchtest:"),
+            embed=embed,
+            ephemeral=True
+        )
+        
+        # User-Response Handler starten
+        await self._handle_user_add_response(interaction)
+    
+    async def _handle_user_add_response(self, interaction: discord.Interaction):
+        """Handler für User-Response beim Hinzufügen"""
+        try:
+            # Warte auf User-Response (60 Sekunden)
+            def check(message):
+                return (message.author == interaction.user and 
+                       message.channel == interaction.channel and
+                       not message.author.bot)
+            # if channel was deleted or closed, go into return
+            try:
+                try:
+                    user_message = await interaction.client.wait_for('message', timeout=60.0, check=check)
+                except:
+                    return
+            except asyncio.TimeoutError:
+                try:
+                    await interaction.followup.send(
+                        self.config.get('messages.add_user_timeout', "⏰ **Timeout!** Du hast zu lange gebraucht. Versuche es erneut."),
+                        ephemeral=True
+                    )
+                    return
+                except:
+                    return
+            # User-Input parsen
+            user_input = user_message.content.strip()
+            if not user_input:
+                await interaction.followup.send(
+                    self.config.get('messages.add_user_no_input', "❌ **Keine User angegeben!** Gib mindestens einen User an."),
+                    ephemeral=True
+                )
+                return
+            
+            # User-IDs extrahieren
+            user_ids = []
+            words = user_input.split()
+            
+            for word in words:
+                user_id = None
+                
+                # Mention format: <@123456789> oder <@!123456789>
+                if word.startswith('<@') and word.endswith('>'):
+                    user_id = int(word[2:-1].replace('!', ''))
+                # Pure ID
+                elif word.isdigit():
+                    user_id = int(word)
+                
+                if user_id and user_id not in user_ids:
+                    user_ids.append(user_id)
+            
+            if not user_ids:
+                await interaction.followup.send(
+                    self.config.get('messages.add_user_invalid', "❌ **Keine gültigen User gefunden!** Verwende Mentions (@User) oder User-IDs (123456789)."),
+                    ephemeral=True
+                )
+                return
+            
+            # Users hinzufügen
+            added_users = []
+            failed_users = []
+            
+            for user_id in user_ids:
+                try:
+                    user = interaction.guild.get_member(user_id)
+                    if not user:
+                        failed_users.append(f"User-ID {user_id} (nicht auf Server)")
+                        continue
+                    
+                    # Permissions setzen
+                    await interaction.channel.set_permissions(
+                        user,
+                        read_messages=True,
+                        send_messages=True,
+                        attach_files=True
+                    )
+                    
+                    added_users.append(user)
+                    logger.info(f"User {user.id} zum Ticket {interaction.channel.id} hinzugefügt")
+                    
+                except Exception as e:
+                    logger.error(f"Fehler beim Hinzufügen von User {user_id}: {e}")
+                    failed_users.append(f"User-ID {user_id} (Fehler)")
+            
+            # Ergebnis anzeigen
+            embed = discord.Embed(
+                title="➕ User hinzugefügt",
+                color=COLORS['green'] if added_users else COLORS['red'],
+                timestamp=get_timestamp()
+            )
+            
+            if added_users:
+                added_mentions = ' '.join([user.mention for user in added_users])
+                embed.description = f"✅ **Erfolgreich hinzugefügt:**\n{added_mentions}"
+                
+                # Benachrichtigung im Channel
+                await interaction.channel.send(
+                    f"➕ {added_mentions} wurde(n) zum Ticket hinzugefügt von {interaction.user.mention}"
+                )
+            
+            if failed_users:
+                failed_list = '\n'.join([f"• {user}" for user in failed_users])
+                embed.add_field(
+                    name="❌ Fehlgeschlagen",
+                    value=failed_list,
+                    inline=False
+                )
+            
+            await interaction.followup.send(embed=embed, ephemeral=True)
+            
+        except Exception as e:
+            logger.error(f"Fehler beim User-Add-Response: {e}")
+            await interaction.followup.send(
+                "❌ **Fehler beim Hinzufügen der User!**",
+                ephemeral=True
+            )
     
     @discord.ui.button(
         label="Transcript",
@@ -1284,74 +1427,7 @@ class ConfirmCloseView(discord.ui.View):
             view=None
         )
 
-class AddUserModal(discord.ui.Modal):
-    """Modal für User hinzufügen"""
-    
-    def __init__(self, guild_id: int):
-        super().__init__(title="User zum Ticket hinzufügen")
-        self.guild_id = guild_id
-        self.config = TicketConfig(guild_id)
-    
-    user_input = discord.ui.TextInput(
-        label="User ID oder Mention",
-        placeholder="123456789 oder @user",
-        required=True,
-        max_length=100
-    )
-    
-    async def on_submit(self, interaction: discord.Interaction):
-        user_str = self.user_input.value.strip()
-        
-        # User-ID extrahieren
-        user_id = None
-        if user_str.startswith('<@') and user_str.endswith('>'):
-            user_id = int(user_str[2:-1].replace('!', ''))
-        elif user_str.isdigit():
-            user_id = int(user_str)
-        
-        if not user_id:
-            await interaction.response.send_message(
-                "❌ Ungültige User-ID oder Mention!",
-                ephemeral=True
-            )
-            return
 
-        try:
-            user = interaction.guild.get_member(user_id)
-            if not user:
-                await interaction.response.send_message(
-                    "❌ User nicht auf diesem Server gefunden!",
-                    ephemeral=True
-                )
-                return
-
-            # Permissions setzen
-            await interaction.channel.set_permissions(
-                user,
-                read_messages=True,
-                send_messages=True,
-                attach_files=True
-            )
-
-            msg = self.config.get('messages.user_added', '✅ User hinzugefügt!')
-            await interaction.response.send_message(
-                msg.format(user=user.mention),
-                ephemeral=True
-            )
-            
-            # Benachrichtigung im Channel
-            await interaction.channel.send(
-                f"➕ {user.mention} wurde zum Ticket hinzugefügt von {interaction.user.mention}"
-            )
-            
-            logger.info(f"User {user.id} zum Ticket {interaction.channel.id} hinzugefügt")
-            
-        except Exception as e:
-            logger.error(f"Fehler beim Hinzufügen des Users: {e}")
-            await interaction.response.send_message(
-                "❌ Fehler beim Hinzufügen des Users!",
-                ephemeral=True
-            )
 
 class CategoryCreateModal(discord.ui.Modal):
     """Modal für das Erstellen neuer Kategorien"""

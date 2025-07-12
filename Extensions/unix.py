@@ -827,7 +827,13 @@ class Unix(commands.Cog):
                 timestamp = get_timestamp()
             )
             for line in bug_list.split("\n"):
-                embed.add_field(name="Name", value=line.split("Name:")[1].split(" - ")[0], inline=False)
+                if line.strip() and "Name:" in line:
+                    try:
+                        name_part = line.split("Name:")[1].split(" - ")[0]
+                        embed.add_field(name="Name", value=name_part, inline=False)
+                    except (IndexError, ValueError):
+                        # Skip malformed lines
+                        continue
             await interaction.response.send_message(embed=embed, ephemeral=True)
         else:
             await interaction.response.send_message("Es gibt keine Bugs!", ephemeral=True)
@@ -886,8 +892,13 @@ class Unix(commands.Cog):
                 timestamp = get_timestamp()
             )
             for line in feature_list.split("\n"):
-                if line.startswith("Name:"):
-                    embed.add_field(name="Name", value=line.split("Name:")[1].split(" - ")[0], inline=False)
+                if line.strip() and line.startswith("Name:"):
+                    try:
+                        name_part = line.split("Name:")[1].split(" - ")[0]
+                        embed.add_field(name="Name", value=name_part, inline=False)
+                    except (IndexError, ValueError):
+                        # Skip malformed lines
+                        continue
             await interaction.response.send_message(embed=embed, ephemeral=True)
         else:
             await interaction.response.send_message("Es gibt keine Feature-Requests!", ephemeral=True)
