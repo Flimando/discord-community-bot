@@ -35,6 +35,9 @@ import logging
 from discord import app_commands
 from functions import *
 from config import COLORS, BOT_CONFIG, BLACKLIST, DEVELOPER_IDS
+import json
+import os
+import re
 
 # Logger Setup
 logger = logging.getLogger(__name__)
@@ -45,10 +48,132 @@ class Unix(commands.Cog):
 
     def __init__(self, bot):
         self.bot = bot
+        # Link-Erkennungsmuster
+        self.link_patterns = [
+            r'https?://[^\s]+',                    # HTTP/HTTPS Links
+            r'www\.[^\s]+',                        # www Links
+            r'[^\s]+\.[a-zA-Z]{2,}/?[^\s]*',       # Domain.tld Links
+            r'discord\.gg/[^\s]+',                 # Discord Invites
+            r'discord\.com/invite/[^\s]+',         # Discord Invites
+            r'[^\s]+\.tk[^\s]*',                   # .tk Domains
+            r'[^\s]+\.ml[^\s]*',                   # .ml Domains  
+            r'[^\s]+\.cf[^\s]*',                   # .cf Domains
+            r'[^\s]+\.ga[^\s]*',                   # .ga Domains
+            r'bit\.ly/[^\s]+',                     # Bitly Links
+            r'tinyurl\.com/[^\s]+',                # TinyURL Links
+            r't\.co/[^\s]+',                       # Twitter Links
+            r'youtu\.be/[^\s]+',                   # YouTube Short Links
+            r'[^\s]+\.link[^\s]*',                 # .link Domains
+        ]
+        
+        # Kompiliere Regex-Muster für bessere Performance
+        self.compiled_patterns = [re.compile(pattern, re.IGNORECASE) for pattern in self.link_patterns]
+
+    def _contains_link(self, text: str) -> bool:
+        """Prüft ob der Text Links enthält"""
+        for pattern in self.compiled_patterns:
+            if pattern.search(text):
+                return True
+        return False
+
+    def _load_link_config(self) -> dict:
+        """Lädt die Link-Schutz-Konfiguration"""
+        try:
+            # Erstelle config-Ordner falls nicht vorhanden
+            if not os.path.exists('config'):
+                os.makedirs('config')
+                
+            with open('config/link_protection.json', 'r') as f:
+                return json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError):
+            return {
+                "enabled_guilds": [],
+                "exempt_channels": {},
+                "exempt_users": {}
+            }
+
+    def _save_link_config(self, config: dict):
+        """Speichert die Link-Schutz-Konfiguration"""
+        try:
+            if not os.path.exists('config'):
+                os.makedirs('config')
+            with open('config/link_protection.json', 'w') as f:
+                json.dump(config, f, indent=4)
+        except Exception as e:
+            logger.error(f"Fehler beim Speichern der Link-Konfiguration: {e}")
 
     @commands.Cog.listener()
     async def on_ready(self):
         print("Logged Succesfully In")
+
+    @commands.Cog.listener()
+    async def on_message(self, message):
+        """Link-Schutz Event Handler"""
+        # Ignore bot messages
+        if message.author.bot:
+            return
+            
+        # Ignore DMs
+        if not message.guild:
+            return
+            
+        # Ignore if no content
+        if not message.content:
+            return
+            
+        # Lade Link-Konfiguration
+        config = self._load_link_config()
+        guild_id = str(message.guild.id)
+        
+        # Prüfe ob Link-Schutz für diesen Server aktiviert ist
+        if guild_id not in config["enabled_guilds"]:
+            return
+            
+        # Prüfe Channel-Ausnahmen
+        if guild_id in config["exempt_channels"]:
+            if str(message.channel.id) in config["exempt_channels"][guild_id]:
+                return
+                
+        # Prüfe User-Ausnahmen
+        if guild_id in config["exempt_users"]:
+            if str(message.author.id) in config["exempt_users"][guild_id]:
+                return
+                
+        # Prüfe Admin-Berechtigungen
+        if message.author.guild_permissions.administrator:
+            return
+            
+        # Prüfe Moderator-Berechtigungen
+        if message.author.guild_permissions.manage_messages:
+            return
+            
+        # Prüfe auf Links
+        if self._contains_link(message.content):
+            try:
+                # Lösche die Nachricht
+                await message.delete()
+                
+                # Sende Warnung
+                warning_embed = discord.Embed(
+                    title="🚫 Link blockiert!",
+                    description=f"{message.author.mention}, Links sind in diesem Server nicht erlaubt!",
+                    color=COLORS["red"],
+                    timestamp=get_timestamp()
+                )
+                warning_embed.set_footer(text=f"User: {message.author.name} | Channel: #{message.channel.name}")
+                
+                # Sende Warnung und lösche nach 10 Sekunden
+                warning_msg = await message.channel.send(embed=warning_embed)
+                await asyncio.sleep(10)
+                await warning_msg.delete()
+                
+                # Logging
+                logger.info(f"Link blocked from {message.author.id} in {message.guild.id} | Content: {message.content[:100]}")
+                
+            except discord.Forbidden:
+                logger.error(f"Keine Berechtigung zum Löschen von Links in {message.guild.id}")
+            except Exception as e:
+                logger.error(f"Fehler beim Link-Schutz: {e}")
     
     @app_commands.command(
         name="help",
@@ -98,6 +223,24 @@ class Unix(commands.Cog):
                 name="🐛 Bug System",
                 value="`/bug-report` - Meldet einen Bug an die Entwickler\n"
                       "`/bug-list` - Zeigt aktuelle Bugs (nur Entwickler)",
+                inline=False
+            )
+            
+            # 💡 FEATURE SYSTEM
+            embed.add_field(
+                name="💡 Feature System",
+                value="`/feature-request` - Meldet eine Feature-Anfrage an die Entwickler\n"
+                      "`/feature-list` - Zeigt aktuelle Feature-Requests (nur Entwickler)",
+                inline=False
+            )
+            
+            # 🔗 LINK PROTECTION
+            embed.add_field(
+                name="🔗 Link Protection (Admin-Only)",
+                value="`/disable-link` - Aktiviert/Deaktiviert Link-Schutz\n"
+                      "`/link-channel-exempt` - Channel-Ausnahmen verwalten\n"
+                      "`/link-user-exempt` - User-Ausnahmen verwalten\n"
+                      "`/link-status` - Zeigt aktuellen Status & Ausnahmen",
                 inline=False
             )
             
@@ -202,7 +345,7 @@ class Unix(commands.Cog):
     
     def _count_total_commands(self):
         """Zählt alle verfügbaren Commands"""
-        return 43  # Unix(17) + Level(12) + Ticket(13) + Counter(1) = 43 Commands
+        return 49  # Unix(23) + Level(12) + Ticket(13) + Counter(1) = 49 Commands
 
     @app_commands.command(
         name="about",
@@ -295,6 +438,269 @@ class Unix(commands.Cog):
             )
 
     @app_commands.command(
+        name = "disable-link",
+        description = "Deaktiviert/aktiviert den Link-Schutz"
+    )
+    @app_commands.describe(
+        boolean = "True = aktivieren, False = deaktivieren"
+    )
+    @app_commands.default_permissions(administrator=True)
+    async def disable_link(self, interaction: discord.Interaction, boolean: bool = None):
+        if boolean is None:
+            # Zeige aktuellen Status
+            config = self._load_link_config()
+            guild_id = str(interaction.guild.id)
+            status = "aktiviert" if guild_id in config["enabled_guilds"] else "deaktiviert"
+            
+            embed = discord.Embed(
+                title="🔗 Link-Schutz Status",
+                description=f"**Aktueller Status:** {status}\n\n"
+                           f"**Verwendung:** `/disable-link True/False`\n"
+                           f"• `True` = Link-Schutz aktivieren\n"
+                           f"• `False` = Link-Schutz deaktivieren",
+                color=COLORS["blue"]
+            )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+            
+        config = self._load_link_config()
+        guild_id = str(interaction.guild.id)
+        
+        if boolean:
+            # Aktiviere Link-Schutz
+            if guild_id not in config["enabled_guilds"]:
+                config["enabled_guilds"].append(guild_id)
+                config["exempt_channels"][guild_id] = []
+                config["exempt_users"][guild_id] = []
+                
+                self._save_link_config(config)
+                
+                embed = discord.Embed(
+                    title="✅ Link-Schutz aktiviert!",
+                    description="Links werden nun automatisch gelöscht.\n\n"
+                               "**Ausnahmen:**\n"
+                               "• Administratoren\n"
+                               "• User mit `Nachrichten verwalten`\n"
+                               "• Ausnahme-Channels (siehe `/link-channel-exempt`)\n"
+                               "• Ausnahme-User (siehe `/link-user-exempt`)",
+                    color=COLORS["green"]
+                )
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+                logger.info(f"Link protection enabled for guild {guild_id}")
+            else:
+                await interaction.response.send_message("Link-Schutz ist bereits aktiviert!", ephemeral=True)
+        else:
+            # Deaktiviere Link-Schutz
+            if guild_id in config["enabled_guilds"]:
+                config["enabled_guilds"].remove(guild_id)
+                self._save_link_config(config)
+                
+                embed = discord.Embed(
+                    title="❌ Link-Schutz deaktiviert!",
+                    description="Links werden nicht mehr automatisch gelöscht.",
+                    color=COLORS["red"]
+                )
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+                logger.info(f"Link protection disabled for guild {guild_id}")
+            else:
+                await interaction.response.send_message("Link-Schutz ist bereits deaktiviert!", ephemeral=True)
+
+    @app_commands.command(
+        name="link-channel-exempt",
+        description="Fügt einen Channel als Ausnahme für den Link-Schutz hinzu oder entfernt ihn"
+    )
+    @app_commands.describe(
+        channel="Der Channel, der als Ausnahme hinzugefügt/entfernt werden soll",
+        action="add = hinzufügen, remove = entfernen"
+    )
+    @app_commands.default_permissions(administrator=True)
+    async def link_channel_exempt(self, interaction: discord.Interaction, channel: discord.TextChannel, action: str):
+        if action.lower() not in ["add", "remove"]:
+            await interaction.response.send_message("Aktion muss `add` oder `remove` sein!", ephemeral=True)
+            return
+            
+        config = self._load_link_config()
+        guild_id = str(interaction.guild.id)
+        channel_id = str(channel.id)
+        
+        # Prüfe ob Link-Schutz aktiviert ist
+        if guild_id not in config["enabled_guilds"]:
+            await interaction.response.send_message("Link-Schutz ist nicht aktiviert! Nutze `/disable-link True`", ephemeral=True)
+            return
+            
+        # Initialisiere Channel-Liste falls nötig
+        if guild_id not in config["exempt_channels"]:
+            config["exempt_channels"][guild_id] = []
+            
+        if action.lower() == "add":
+            if channel_id not in config["exempt_channels"][guild_id]:
+                config["exempt_channels"][guild_id].append(channel_id)
+                self._save_link_config(config)
+                
+                embed = discord.Embed(
+                    title="✅ Channel-Ausnahme hinzugefügt!",
+                    description=f"Channel {channel.mention} ist nun vom Link-Schutz ausgenommen.",
+                    color=COLORS["green"]
+                )
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+                logger.info(f"Channel {channel_id} added to link protection exemptions for guild {guild_id}")
+            else:
+                await interaction.response.send_message(f"Channel {channel.mention} ist bereits ausgenommen!", ephemeral=True)
+        else:
+            if channel_id in config["exempt_channels"][guild_id]:
+                config["exempt_channels"][guild_id].remove(channel_id)
+                self._save_link_config(config)
+                
+                embed = discord.Embed(
+                    title="❌ Channel-Ausnahme entfernt!",
+                    description=f"Channel {channel.mention} ist nun wieder vom Link-Schutz betroffen.",
+                    color=COLORS["red"]
+                )
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+                logger.info(f"Channel {channel_id} removed from link protection exemptions for guild {guild_id}")
+            else:
+                await interaction.response.send_message(f"Channel {channel.mention} ist nicht in den Ausnahmen!", ephemeral=True)
+
+    @app_commands.command(
+        name="link-user-exempt",
+        description="Fügt einen User als Ausnahme für den Link-Schutz hinzu oder entfernt ihn"
+    )
+    @app_commands.describe(
+        user="Der User, der als Ausnahme hinzugefügt/entfernt werden soll",
+        action="add = hinzufügen, remove = entfernen"
+    )
+    @app_commands.default_permissions(administrator=True)
+    async def link_user_exempt(self, interaction: discord.Interaction, user: discord.Member, action: str):
+        if action.lower() not in ["add", "remove"]:
+            await interaction.response.send_message("Aktion muss `add` oder `remove` sein!", ephemeral=True)
+            return
+            
+        config = self._load_link_config()
+        guild_id = str(interaction.guild.id)
+        user_id = str(user.id)
+        
+        # Prüfe ob Link-Schutz aktiviert ist
+        if guild_id not in config["enabled_guilds"]:
+            await interaction.response.send_message("Link-Schutz ist nicht aktiviert! Nutze `/disable-link True`", ephemeral=True)
+            return
+            
+        # Initialisiere User-Liste falls nötig
+        if guild_id not in config["exempt_users"]:
+            config["exempt_users"][guild_id] = []
+            
+        if action.lower() == "add":
+            if user_id not in config["exempt_users"][guild_id]:
+                config["exempt_users"][guild_id].append(user_id)
+                self._save_link_config(config)
+                
+                embed = discord.Embed(
+                    title="✅ User-Ausnahme hinzugefügt!",
+                    description=f"User {user.mention} ist nun vom Link-Schutz ausgenommen.",
+                    color=COLORS["green"]
+                )
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+                logger.info(f"User {user_id} added to link protection exemptions for guild {guild_id}")
+            else:
+                await interaction.response.send_message(f"User {user.mention} ist bereits ausgenommen!", ephemeral=True)
+        else:
+            if user_id in config["exempt_users"][guild_id]:
+                config["exempt_users"][guild_id].remove(user_id)
+                self._save_link_config(config)
+                
+                embed = discord.Embed(
+                    title="❌ User-Ausnahme entfernt!",
+                    description=f"User {user.mention} ist nun wieder vom Link-Schutz betroffen.",
+                    color=COLORS["red"]
+                )
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+                logger.info(f"User {user_id} removed from link protection exemptions for guild {guild_id}")
+            else:
+                await interaction.response.send_message(f"User {user.mention} ist nicht in den Ausnahmen!", ephemeral=True)
+
+    @app_commands.command(
+        name="link-status",
+        description="Zeigt den aktuellen Link-Schutz Status und alle Ausnahmen an"
+    )
+    @app_commands.default_permissions(administrator=True)
+    async def link_status(self, interaction: discord.Interaction):
+        config = self._load_link_config()
+        guild_id = str(interaction.guild.id)
+        
+        if guild_id not in config["enabled_guilds"]:
+            embed = discord.Embed(
+                title="🔗 Link-Schutz Status",
+                description="**Status:** ❌ Deaktiviert\n\nNutze `/disable-link True` um den Link-Schutz zu aktivieren.",
+                color=COLORS["red"]
+            )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+            
+        exempt_channels = []
+        exempt_users = []
+        
+        if guild_id in config["exempt_channels"]:
+            for channel_id in config["exempt_channels"][guild_id]:
+                channel = interaction.guild.get_channel(int(channel_id))
+                if channel:
+                    exempt_channels.append(channel.mention)
+                    
+        if guild_id in config["exempt_users"]:
+            for user_id in config["exempt_users"][guild_id]:
+                user = interaction.guild.get_member(int(user_id))
+                if user:
+                    exempt_users.append(user.mention)
+                    
+        embed = discord.Embed(
+            title="🔗 Link-Schutz Status",
+            description="**Status:** ✅ Aktiviert\n\nLinks werden automatisch gelöscht, außer von:",
+            color=COLORS["green"]
+        )
+        
+        # Automatische Ausnahmen
+        embed.add_field(
+            name="🔓 Automatische Ausnahmen",
+            value="• Administratoren\n• User mit `Nachrichten verwalten`",
+            inline=False
+        )
+        
+        # Channel-Ausnahmen
+        if exempt_channels:
+            channels_text = "\n".join(exempt_channels[:10])
+            if len(exempt_channels) > 10:
+                channels_text += f"\n... und {len(exempt_channels) - 10} weitere"
+            embed.add_field(
+                name=f"📺 Ausnahme-Channels ({len(exempt_channels)})",
+                value=channels_text,
+                inline=False
+            )
+        else:
+            embed.add_field(
+                name="📺 Ausnahme-Channels",
+                value="Keine",
+                inline=False
+            )
+            
+        # User-Ausnahmen
+        if exempt_users:
+            users_text = "\n".join(exempt_users[:10])
+            if len(exempt_users) > 10:
+                users_text += f"\n... und {len(exempt_users) - 10} weitere"
+            embed.add_field(
+                name=f"👥 Ausnahme-User ({len(exempt_users)})",
+                value=users_text,
+                inline=False
+            )
+        else:
+            embed.add_field(
+                name="👥 Ausnahme-User",
+                value="Keine",
+                inline=False
+            )
+            
+        embed.set_footer(text="Nutze /link-channel-exempt und /link-user-exempt um Ausnahmen zu verwalten")
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+        
+    @app_commands.command(
         name = "clear",
         description = "Löscht eine bestimmte Anzahl von Nachrichten"
     ) #Kann überall benutzt werden weil nicht extrem wichtig
@@ -385,6 +791,66 @@ class Unix(commands.Cog):
             await interaction.response.send_message(embed=embed, ephemeral=True)
         else:
             await interaction.response.send_message("Es gibt keine Bugs!", ephemeral=True)
+
+    @app_commands.command(
+        name = "feature-request",
+        description = "Meldet eine Feature-Anfrage"
+    )
+    @app_commands.describe(
+        feature = "Bitte beschreibe das gewünschte Feature und warum es nützlich wäre. Wir werden es prüfen!"
+    )
+    async def feature_request(self, interaction: discord.Interaction, feature: str):
+        if interaction.user.id in BLACKLIST["users"]:
+            await interaction.response.send_message("Du bist in der Blacklist und kannst keine Features anfragen!", ephemeral=True)
+            return
+        if interaction.guild.id in BLACKLIST["guilds"]:
+            await interaction.response.send_message("Dieser Server ist in der Blacklist und du kannst keine Features anfragen!", ephemeral=True)
+            return
+        
+        embed = discord.Embed(
+            title = "💡 Feature Request",
+            description = f"**Angefordert von:** {interaction.user.mention}\n**Feature:** {feature}",
+            color = COLORS["green"],
+            timestamp = get_timestamp()
+        )
+        embed.set_footer(text=f"Danke für deine Idee! Wir werden sie prüfen.")
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+        logger.info(f"Feature request used by {interaction.user.id} in guild {interaction.guild.id}")
+        try:
+            if os.path.exists("feature_requests.txt"):
+                with open("feature_requests.txt", "a") as f:
+                    f.write(f"Name: {interaction.user.name} - ID: {interaction.user.id} - Guild: {interaction.guild.name} - ID: {interaction.guild.id} - Feature: {feature}\n")
+            else:
+                with open("feature_requests.txt", "w") as f:
+                    f.write("Feature Requests:\n")
+                    f.write(f"Name: {interaction.user.name} - ID: {interaction.user.id} - Guild: {interaction.guild.name} - ID: {interaction.guild.id} - Feature: {feature}\n")
+        except Exception as e:
+            logger.error(f"Error writing feature request: {e}")
+            await interaction.followup.send("❌ Fehler beim Melden des Features!", ephemeral=True)
+
+    @app_commands.command(
+        name = "feature-list",
+        description = "Liste der aktuellen Feature-Requests"
+    )
+    async def feature_list(self, interaction: discord.Interaction):
+        if interaction.user.id not in DEVELOPER_IDS:
+            await interaction.response.send_message("Du bist kein Entwickler und kannst keine Feature-Requests sehen!", ephemeral=True)
+            return
+        if os.path.exists("feature_requests.txt"):
+            with open("feature_requests.txt", "r") as f:
+                feature_list = f.read()
+            embed = discord.Embed(
+                title = "💡 Aktuelle Feature-Requests",
+                description = feature_list,
+                color = COLORS["green"],
+                timestamp = get_timestamp()
+            )
+            for line in feature_list.split("\n"):
+                if line.startswith("Name:"):
+                    embed.add_field(name="Name", value=line.split("Name:")[1].split(" - ")[0], inline=False)
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+        else:
+            await interaction.response.send_message("Es gibt keine Feature-Requests!", ephemeral=True)
 
 
     @app_commands.command(
