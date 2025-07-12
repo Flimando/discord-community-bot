@@ -200,7 +200,8 @@ class Unix(commands.Cog):
                       "`/clear` - Löscht Nachrichten (1-100)\n"
                       "`/serverstats` - Detaillierte Server-Statistiken\n"
                       "`/memberinfo` - User-Informationen anzeigen\n"
-                      "`/admin-setup` - Setup-Befehle für Admins",
+                      "`/admin-setup` - Setup-Befehle für Admins\n"
+                      "`/update` - Zeigt die neuesten Updates des Bots",
                 inline=False
             )
             
@@ -346,6 +347,45 @@ class Unix(commands.Cog):
     def _count_total_commands(self):
         """Zählt alle verfügbaren Commands"""
         return 49  # Unix(23) + Level(12) + Ticket(13) + Counter(1) = 49 Commands
+
+    @app_commands.command(
+        name="update",
+        description="Zeige die neuesten Feuters des Bots"
+    )
+    async def update(self, interaction: discord.Interaction):
+        embed = discord.Embed(
+            title="🔄 Neueste Updates",
+            description="**Neueste Features des Bots:**",
+            color=COLORS["green"],
+            timestamp=get_timestamp()
+        )
+        embed.set_thumbnail(url=self.bot.user.display_avatar.url)
+        embed.add_field(
+            name="🔗 Link Protection",
+            value="• Link-Schutz wurde hinzugefügt\n"
+                  "• Link-Schutz kann nun deaktiviert/aktiviert werden\n"
+                  "• Channel-Ausnahmen können hinzugefügt werden\n"
+                  "• User-Ausnahmen können hinzugefügt werden\n"
+                  "• Link-Schutz kann nun den aktuellen Status und Ausnahmen anzeigen\n"
+                  "• Commands:\n" 
+                  "`/disable-link [True/False]`\n"
+                  "`/link-channel-exempt [Channel]`\n"
+                  "`/link-user-exempt [User]`\n"
+                  "`/link-status`",
+            inline=False
+        )
+        embed.add_field(
+            name="💡 Feature-request",
+            value="• Feature-request wurde hinzugefügt\n"
+                  "• Features die gewollt werden können nun gemeldet werden\n"
+                  "• Commands:\n"
+                  "`/feature-request [Feature]`",
+            inline=False
+        )
+        embed.set_footer(
+            text=f"Aktuelle Version: {BOT_CONFIG['bot_version']} ({BOT_CONFIG['state_version']})"
+        )
+        await interaction.response.send_message(embed=embed)
 
     @app_commands.command(
         name="about",
