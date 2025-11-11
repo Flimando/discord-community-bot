@@ -89,7 +89,8 @@ class Unix(commands.Cog):
             return {
                 "enabled_guilds": [],
                 "exempt_channels": {},
-                "exempt_users": {}
+                "exempt_users": {},
+                "exempt_categories": {}
             }
 
     def _save_link_config(self, config: dict):
@@ -138,6 +139,24 @@ class Unix(commands.Cog):
         if guild_id in config["exempt_users"]:
             if str(message.author.id) in config["exempt_users"][guild_id]:
                 return
+        
+        # Prüfe Kategorie-Ausnahmen
+        try:
+            # Prüfe ob Channel überhaupt eine Kategorie hat
+            if message.channel.category:
+                if guild_id in config["exempt_categories"]:
+                    if str(message.channel.category.id) in config["exempt_categories"][guild_id]:
+                        return
+        except AttributeError:
+            # Channel hat keine Kategorie (z.B. DM oder uncategorized channel)
+            pass
+        except KeyError:
+            # exempt_categories existiert nicht für diese Guild oder den ganzen Key
+            if "exempt_categories" not in config:
+                config["exempt_categories"] = {}
+            if guild_id not in config["exempt_categories"]:
+                config["exempt_categories"][guild_id] = []
+            self._save_link_config(config)
                 
         # Prüfe Admin-Berechtigungen
         if message.author.guild_permissions.administrator:
@@ -510,8 +529,14 @@ class Unix(commands.Cog):
             # Aktiviere Link-Schutz
             if guild_id not in config["enabled_guilds"]:
                 config["enabled_guilds"].append(guild_id)
-                config["exempt_channels"][guild_id] = []
-                config["exempt_users"][guild_id] = []
+                
+                # Initialisiere alle Listen falls sie nicht existieren
+                if guild_id not in config["exempt_channels"]:
+                    config["exempt_channels"][guild_id] = []
+                if guild_id not in config["exempt_users"]:
+                    config["exempt_users"][guild_id] = []
+                if guild_id not in config["exempt_categories"]:
+                    config["exempt_categories"][guild_id] = []
                 
                 self._save_link_config(config)
                 
@@ -522,6 +547,7 @@ class Unix(commands.Cog):
                                "• Administratoren\n"
                                "• User mit `Nachrichten verwalten`\n"
                                "• Ausnahme-Channels (siehe `/link-channel-exempt`)\n"
+                               "• Ausnahme-Kategorien (siehe `/link-category-exempt`)\n"
                                "• Ausnahme-User (siehe `/link-user-exempt`)",
                     color=COLORS["green"]
                 )
@@ -545,6 +571,61 @@ class Unix(commands.Cog):
             else:
                 await interaction.response.send_message("Link-Schutz ist bereits deaktiviert!", ephemeral=True)
 
+    @app_commands.command(
+        name="link-category-exempt",
+        description="Fügt eine Kategorie als Ausnahme für den Link-Schutz hinzu oder entfernt ihn"
+    )
+    @app_commands.describe(
+        category="Die Kategorie, der als Ausnahme hinzugefügt/entfernt werden soll",
+        action="add = hinzufügen, remove = entfernen"
+    )
+    @app_commands.default_permissions(administrator=True)
+    async def link_category_exempt(self, interaction: discord.Interaction, category: discord.CategoryChannel, action: str):
+        if action.lower() not in ["add", "remove"]:
+            await interaction.response.send_message("Aktion muss `add` oder `remove` sein!", ephemeral=True)
+            return
+        
+        config = self._load_link_config()
+        guild_id = str(interaction.guild.id)
+        category_id = str(category.id)
+        
+        # Prüfe ob Link-Schutz aktiviert ist
+        if guild_id not in config["enabled_guilds"]:
+            await interaction.response.send_message("Link-Schutz ist nicht aktiviert! Nutze `/disable-link True`", ephemeral=True)
+            return
+        
+        # Initialisiere Category-Liste falls nötig
+        if guild_id not in config["exempt_categories"]:
+            config["exempt_categories"][guild_id] = []
+        
+        if action.lower() == "add":
+            if category_id not in config["exempt_categories"][guild_id]:
+                config["exempt_categories"][guild_id].append(category_id)
+                self._save_link_config(config)
+                
+                embed = discord.Embed(
+                    title="✅ Kategorie-Ausnahme hinzugefügt!",
+                    description=f"Kategorie {category.mention} ist nun vom Link-Schutz ausgenommen.",
+                    color=COLORS["green"]
+                )
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+                logger.info(f"Category {category_id} added to link protection exemptions for guild {guild_id}")
+            else:
+                await interaction.response.send_message(f"Kategorie {category.mention} ist bereits ausgenommen!", ephemeral=True)
+        else:
+            if category_id in config["exempt_categories"][guild_id]:
+                config["exempt_categories"][guild_id].remove(category_id)
+                self._save_link_config(config)
+                
+                embed = discord.Embed(
+                    title="❌ Kategorie-Ausnahme entfernt!",
+                    description=f"Kategorie {category.mention} ist nun wieder vom Link-Schutz betroffen.",
+                    color=COLORS["red"]
+                )
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+                logger.info(f"Category {category_id} removed from link protection exemptions for guild {guild_id}")
+            else:
+                await interaction.response.send_message(f"Kategorie {category.mention} ist nicht in den Ausnahmen!", ephemeral=True)
     @app_commands.command(
         name="link-channel-exempt",
         description="Fügt einen Channel als Ausnahme für den Link-Schutz hinzu oder entfernt ihn"
@@ -677,6 +758,7 @@ class Unix(commands.Cog):
             
         exempt_channels = []
         exempt_users = []
+        exempt_categories = []
         
         if guild_id in config["exempt_channels"]:
             for channel_id in config["exempt_channels"][guild_id]:
@@ -689,6 +771,12 @@ class Unix(commands.Cog):
                 user = interaction.guild.get_member(int(user_id))
                 if user:
                     exempt_users.append(user.mention)
+        
+        if guild_id in config["exempt_categories"]:
+            for category_id in config["exempt_categories"][guild_id]:
+                category = interaction.guild.get_channel(int(category_id))
+                if category:
+                    exempt_categories.append(category.mention)
                     
         embed = discord.Embed(
             title="🔗 Link-Schutz Status",
@@ -736,8 +824,25 @@ class Unix(commands.Cog):
                 value="Keine",
                 inline=False
             )
+        
+        # Kategorie-Ausnahmen
+        if exempt_categories:
+            categories_text = "\n".join(exempt_categories[:10])
+            if len(exempt_categories) > 10:
+                categories_text += f"\n... und {len(exempt_categories) - 10} weitere"
+            embed.add_field(
+                name=f"📂 Ausnahme-Kategorien ({len(exempt_categories)})",
+                value=categories_text,
+                inline=False
+            )
+        else:
+            embed.add_field(
+                name="📂 Ausnahme-Kategorien",
+                value="Keine",
+                inline=False
+            )
             
-        embed.set_footer(text="Nutze /link-channel-exempt und /link-user-exempt um Ausnahmen zu verwalten")
+        embed.set_footer(text="Nutze /link-channel-exempt, /link-user-exempt und /link-category-exempt um Ausnahmen zu verwalten")
         await interaction.response.send_message(embed=embed, ephemeral=True)
         
     @app_commands.command(
