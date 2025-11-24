@@ -45,8 +45,7 @@ Ein **modularer** Discord Bot für Community-Server mit erweiterten Features wie
 
 1. **Repository klonen**
 ```bash
-git clone https://github.com/your-repo/basic-bot-comm.git
-cd basic-bot-comm
+git clone https://github.com/Flimando/discord-community-bot/tree/main.git
 ```
 
 2. **Dependencies installieren**
