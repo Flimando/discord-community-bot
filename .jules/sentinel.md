@@ -1,0 +1,4 @@
+## 2024-05-18 - Authorization Bypass & DoS in `/clear` command
+**Vulnerability:** The `/clear` command in `Extensions/unix.py` lacked permission checks (any user could use it) and had no bounds on the number of messages to delete.
+**Learning:** Commands that delete content or perform bulk operations MUST have strict permission checks (e.g. `manage_messages`) and bounded inputs to prevent abuse and API rate limit exhaustion. The original code explicitly noted "#Kann überall benutzt werden weil nicht extrem wichtig" (Can be used anywhere because not extremely important), which shows a misunderstanding of the impact of an unauthenticated mass deletion vector.
+**Prevention:** Always add `@app_commands.default_permissions(...)` to moderation commands and validate user input lengths/ranges before processing.

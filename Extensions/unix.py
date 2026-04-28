@@ -743,8 +743,14 @@ class Unix(commands.Cog):
     @app_commands.command(
         name = "clear",
         description = "Löscht eine bestimmte Anzahl von Nachrichten"
-    ) #Kann überall benutzt werden weil nicht extrem wichtig
+    )
+    @app_commands.default_permissions(manage_messages=True)
     async def clear(self, interaction: discord.Interaction, amount: int):
+        # Validate amount
+        if amount < 1 or amount > 100:
+            await interaction.response.send_message("Die Anzahl der zu löschenden Nachrichten muss zwischen 1 und 100 liegen!", ephemeral=True)
+            return
+
         # Defer the response to avoid timeout
         await interaction.response.defer(ephemeral=True)
         
